@@ -27,6 +27,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -42,6 +43,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.sodamusic.player.model.Track
 import com.sodamusic.player.utils.openAudioFilePicker
+import com.sodamusic.player.utils.scanLocalTracks
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -74,74 +76,53 @@ fun TrackPicker(
                     Tab.Demos -> {
                         LazyColumn(modifier = Modifier.height(280.dp)) {
                             items(demoTracks) { track ->
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .clickable { onSelectTrack(track) }
-                                        .padding(vertical = 10.dp, horizontal = 4.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Box(
-                                        modifier = Modifier.size(40.dp).clip(RoundedCornerShape(8.dp))
-                                            .background(Color(track.coverColor)),
-                                        contentAlignment = Alignment.Center
-                                    ) {
-                                        // Cover tiles are saturated brand colors; white icon always reads.
-                                        Icon(Icons.Default.MusicNote, null, tint = Color.White)
-                                    }
-                                    Spacer(Modifier.size(10.dp))
-                                    Column {
-                                        Text(
-                                            track.title,
-                                            color = MaterialTheme.colorScheme.onSurface,
-                                            fontSize = 14.sp,
-                                            fontWeight = FontWeight.Medium
-                                        )
-                                        Text(
-                                            track.artist,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                            fontSize = 12.sp
-                                        )
-                                    }
-                                }
+                                TrackRow(track = track, onClick = { onSelectTrack(track) })
                             }
                         }
                     }
                     Tab.Local -> {
-                        var path by remember { mutableStateOf("") }
+                        var scanned by remember { mutableStateOf<List<Track>?>(null) }
                         val scope = rememberCoroutineScope()
-                        OutlinedTextField(
-                            value = path,
-                            onValueChange = { path = it },
-                            label = { Text("音频文件路径或内容 URI") },
-                            singleLine = true,
-                            modifier = Modifier.fillMaxWidth()
-                        )
+                        LaunchedEffect(Unit) {
+                            scanned = withContext(Dispatchers.IO) { scanLocalTracks() }
+                        }
+                        val list = scanned
+                        if (list == null) {
+                            Text("正在扫描本地音乐…", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
+                        } else if (list.isEmpty()) {
+                            Text(
+                                "未找到本地音乐（请授予音频访问权限，或点下方按钮手动选择文件）",
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                fontSize = 13.sp
+                            )
+                        } else {
+                            Text(
+                                "共 ${list.size} 首",
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                fontSize = 12.sp,
+                                modifier = Modifier.padding(bottom = 6.dp)
+                            )
+                            LazyColumn(modifier = Modifier.height(280.dp)) {
+                                items(list) { track ->
+                                    TrackRow(track = track, onClick = { onSelectTrack(track) })
+                                }
+                            }
+                        }
                         Spacer(Modifier.height(8.dp))
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            // On desktop opens a JFileChooser; on Android launches the system
-                            // SAF audio picker; on iOS is a no-op.
+                            // SAF/manual fallback picker.
                             OutlinedButton(
                                 onClick = {
                                     scope.launch {
                                         val picked = withContext(Dispatchers.IO) { openAudioFilePicker() }
-                                        if (!picked.isNullOrBlank()) {
-                                            path = picked
-                                            onPickLocal(picked.trim())
-                                        }
+                                        if (!picked.isNullOrBlank()) onPickLocal(picked.trim())
                                     }
                                 }
                             ) {
                                 Text("选择文件…")
-                            }
-                            Button(
-                                onClick = { if (path.isNotBlank()) onPickLocal(path.trim()) },
-                                enabled = path.isNotBlank()
-                            ) {
-                                Text("加载并播放")
                             }
                         }
                     }
@@ -164,6 +145,50 @@ fun TrackPicker(
         },
         confirmButton = { TextButton(onClick = onDismiss) { Text("关闭") } }
     )
+}
+
+@Composable
+private fun TrackRow(track: Track, onClick: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(vertical = 10.dp, horizontal = 4.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            modifier = Modifier.size(40.dp).clip(RoundedCornerShape(8.dp))
+                .background(Color(track.coverColor)),
+            contentAlignment = Alignment.Center
+        ) {
+            // Cover tiles are saturated colors; white icon always reads.
+            Icon(Icons.Default.MusicNote, null, tint = Color.White)
+        }
+        Spacer(Modifier.size(10.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                track.title,
+                color = MaterialTheme.colorScheme.onSurface,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Medium,
+                maxLines = 1
+            )
+            val sub = if (track.durationMs > 0) {
+                "${track.artist} · ${formatLen(track.durationMs)}"
+            } else track.artist
+            Text(
+                sub,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontSize = 12.sp,
+                maxLines = 1
+            )
+        }
+    }
+}
+
+private fun formatLen(ms: Long): String {
+    val s = ms / 1000
+    return "%d:%02d".format(s / 60, s % 60)
 }
 
 @Composable

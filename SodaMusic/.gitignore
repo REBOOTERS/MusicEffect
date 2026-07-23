@@ -1,0 +1,41 @@
+﻿# Gradle
+.gradle/
+build/
+**/build/
+!gradle/wrapper/gradle-wrapper.jar
+
+# IDE
+.idea/
+*.iml
+*.iws
+*.ipr
+.vscode/
+
+# Android
+*.apk
+*.aab
+*.ap_
+*.dex
+local.properties
+
+# iOS
+Pods/
+*.xcworkspace
+*.xcuserstate
+DerivedData/
+
+# Desktop
+composeApp/compose/binaries/
+*.dmg
+*.msi
+*.exe
+*.deb
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Kotlin
+*.class
+*.jar
+!gradle/wrapper/*.jar

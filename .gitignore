@@ -1,0 +1,58 @@
+# Gradle
+.gradle/
+**/.gradle/
+.g2/
+**/.g2/
+build/
+**/build/
+!gradle/wrapper/gradle-wrapper.jar
+!SodaMusic/gradle/wrapper/gradle-wrapper.jar
+
+# Kotlin
+.kotlin/
+**/.kotlin/
+*.class
+*.jar
+!gradle/wrapper/*.jar
+!SodaMusic/gradle/wrapper/*.jar
+
+# IDE
+.idea/
+**/.idea/
+*.iml
+*.iws
+*.ipr
+.vscode/
+
+# Android
+*.apk
+*.aab
+*.ap_
+*.dex
+local.properties
+**/local.properties
+
+# iOS
+Pods/
+**/Pods/
+*.xcworkspace
+*.xcuserstate
+DerivedData/
+
+# Desktop / Compose
+composeApp/compose/binaries/
+**/compose/binaries/
+*.dmg
+*.msi
+*.exe
+*.deb
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs / temp
+*.log
+*.tmp
+.tmp/
+**/.tmp/

@@ -22,6 +22,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -29,6 +30,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -39,6 +41,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.sodamusic.player.model.Track
+import com.sodamusic.player.utils.openAudioFilePicker
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 @Composable
 fun TrackPicker(
@@ -103,6 +109,7 @@ fun TrackPicker(
                     }
                     Tab.Local -> {
                         var path by remember { mutableStateOf("") }
+                        val scope = rememberCoroutineScope()
                         OutlinedTextField(
                             value = path,
                             onValueChange = { path = it },
@@ -111,8 +118,31 @@ fun TrackPicker(
                             modifier = Modifier.fillMaxWidth()
                         )
                         Spacer(Modifier.height(8.dp))
-                        Button(onClick = { if (path.isNotBlank()) onPickLocal(path.trim()) }) {
-                            Text("加载并播放")
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            // Desktop: opens a native JFileChooser (runs on Swing EDT via IO).
+                            // Mobile: actual returns null immediately, click is a no-op.
+                            OutlinedButton(
+                                onClick = {
+                                    scope.launch {
+                                        val picked = withContext(Dispatchers.IO) { openAudioFilePicker() }
+                                        if (!picked.isNullOrBlank()) {
+                                            path = picked
+                                            onPickLocal(picked.trim())
+                                        }
+                                    }
+                                }
+                            ) {
+                                Text("选择文件…")
+                            }
+                            Button(
+                                onClick = { if (path.isNotBlank()) onPickLocal(path.trim()) },
+                                enabled = path.isNotBlank()
+                            ) {
+                                Text("加载并播放")
+                            }
                         }
                     }
                     Tab.Online -> {

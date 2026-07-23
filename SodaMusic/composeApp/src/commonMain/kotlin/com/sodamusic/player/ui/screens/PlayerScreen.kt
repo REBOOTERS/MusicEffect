@@ -6,15 +6,12 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBarsPadding
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -50,11 +47,12 @@ import com.sodamusic.player.model.PlayState
 import com.sodamusic.player.model.Track
 import com.sodamusic.player.model.TrackSource
 import com.sodamusic.player.ui.LocalPlayer
-import com.sodamusic.player.ui.components.AlbumArt
+import com.sodamusic.player.ui.components.CoverArt
 import com.sodamusic.player.ui.components.EffectsDrawer
 import com.sodamusic.player.ui.components.PlaybackControls
 import com.sodamusic.player.ui.components.ProgressBar
 import com.sodamusic.player.ui.components.TrackPicker
+import com.sodamusic.player.utils.getStartupTrackPath
 import com.sodamusic.player.utils.hasNativeFilePicker
 import com.sodamusic.player.utils.openAudioFilePicker
 import kotlinx.coroutines.Dispatchers
@@ -77,12 +75,12 @@ fun PlayerScreen() {
 
     val demoTracks = remember {
         listOf(
-            Track("demo1", "Sunset Drive", "Chillwave", "Demo", 180000, TrackSource.Online("demo://soda/1"), coverColor = 0xFFFF6B6B),
-            Track("demo2", "Neon Nights", "Synthwave", "Demo", 210000, TrackSource.Online("demo://soda/2"), coverColor = 0xFF4ECDC4),
-            Track("demo3", "Midnight Jazz", "Smooth Jazz", "Demo", 240000, TrackSource.Online("demo://soda/3"), coverColor = 0xFF45B7D1),
-            Track("demo4", "Electric Dreams", "EDM", "Demo", 195000, TrackSource.Online("demo://soda/4"), coverColor = 0xFFF7DC6F),
-            Track("demo5", "Acoustic Breeze", "Acoustic", "Demo", 200000, TrackSource.Online("demo://soda/5"), coverColor = 0xFF82E0AA),
-            Track("demo6", "Bass Drop", "Dubstep", "Demo", 170000, TrackSource.Online("demo://soda/6"), coverColor = 0xFFBB8FCE)
+            Track("demo1", "Sunset Drive", "Chillwave", "Demo", 180000, TrackSource.Online("demo://soda/1"), coverColor = 0xFF8AA86F),
+            Track("demo2", "Neon Nights", "Synthwave", "Demo", 210000, TrackSource.Online("demo://soda/2"), coverColor = 0xFF6F8A9F),
+            Track("demo3", "Midnight Jazz", "Smooth Jazz", "Demo", 240000, TrackSource.Online("demo://soda/3"), coverColor = 0xFFA08B6B),
+            Track("demo4", "Electric Dreams", "EDM", "Demo", 195000, TrackSource.Online("demo://soda/4"), coverColor = 0xFFB08A6F),
+            Track("demo5", "Acoustic Breeze", "Acoustic", "Demo", 200000, TrackSource.Online("demo://soda/5"), coverColor = 0xFF88AA77),
+            Track("demo6", "Bass Drop", "Dubstep", "Demo", 170000, TrackSource.Online("demo://soda/6"), coverColor = 0xFF6B7A8A)
         )
     }
 
@@ -101,22 +99,27 @@ fun PlayerScreen() {
         player.play(track)
     }
 
-    // Desktop: auto-open the native file picker once on first launch when there's no current track.
+    // Auto-play on first launch: desktop uses the configured startup file (caee.mp3);
+    // mobile opens the in-app picker.
     var autoOpened by remember { mutableStateOf(false) }
-    LaunchedEffect(hasNativeFilePicker) {
-        if (hasNativeFilePicker && !autoOpened && currentTrack == null) {
-            autoOpened = true
+    LaunchedEffect(Unit) {
+        if (autoOpened || currentTrack != null) return@LaunchedEffect
+        autoOpened = true
+        val startupPath = getStartupTrackPath()
+        if (startupPath != null) {
+            pickAndPlayLocal(startupPath)
+        } else if (hasNativeFilePicker) {
             val picked = withContext(Dispatchers.IO) { openAudioFilePicker() }
-            if (!picked.isNullOrBlank()) {
-                pickAndPlayLocal(picked.trim())
-            }
+            if (!picked.isNullOrBlank()) pickAndPlayLocal(picked.trim())
+        } else {
+            showPicker = true
         }
     }
 
     val bg = MaterialTheme.colorScheme.background
     val backgroundGradient = Brush.verticalGradient(
-        0f to MaterialTheme.colorScheme.primary.copy(alpha = 0.22f).compositeOver(bg),
-        0.4f to MaterialTheme.colorScheme.primary.copy(alpha = 0.07f).compositeOver(bg),
+        0f to MaterialTheme.colorScheme.primary.copy(alpha = 0.08f).compositeOver(bg),
+        0.5f to MaterialTheme.colorScheme.surface.copy(alpha = 0.6f).compositeOver(bg),
         1f to bg
     )
 
@@ -132,21 +135,22 @@ fun PlayerScreen() {
                     title = {
                         Text(
                             "SodaMusic",
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 22.sp
+                            fontWeight = FontWeight.Medium,
+                            fontSize = 20.sp,
+                            color = MaterialTheme.colorScheme.onSurface
                         )
                     },
                     actions = {
-                        // Effects button — opens the bottom drawer.
+                        // Equalizer / effects toggle
                         IconButton(onClick = { showEffects = true }) {
                             Icon(
                                 Icons.Default.Equalizer,
                                 contentDescription = "音效",
-                                tint = if (currentEffect.displayName != "原声") MaterialTheme.colorScheme.primary
-                                else MaterialTheme.colorScheme.onSurface
+                                tint = if (currentEffect.displayName != "原声")
+                                    MaterialTheme.colorScheme.primary
+                                else MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
-                        // Library / open file button.
                         IconButton(
                             onClick = {
                                 if (hasNativeFilePicker) {
@@ -162,7 +166,7 @@ fun PlayerScreen() {
                             Icon(
                                 Icons.Default.LibraryMusic,
                                 contentDescription = "打开音频文件",
-                                tint = MaterialTheme.colorScheme.onSurface
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
                     },
@@ -170,16 +174,70 @@ fun PlayerScreen() {
                 )
             }
         ) { innerPadding ->
-            PlayerContent(
-                currentTrack = currentTrack,
-                isPlaying = isPlaying,
-                positionMs = position,
-                durationMs = durationMs,
-                shuffle = shuffle,
-                repeat = repeat,
-                player = player,
-                modifier = Modifier.padding(innerPadding)
-            )
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(innerPadding)
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 32.dp, vertical = 16.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Spacer(Modifier.height(12.dp))
+
+                CoverArt(track = currentTrack, isPlaying = isPlaying)
+
+                Spacer(Modifier.height(32.dp))
+
+                currentTrack?.let { track ->
+                    Text(
+                        track.title,
+                        fontSize = 22.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Text(
+                        track.artist,
+                        fontSize = 14.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 6.dp)
+                    )
+                    Spacer(Modifier.height(28.dp))
+                } ?: run {
+                    Text(
+                        "未选择音频",
+                        fontSize = 18.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "点击右上角音符图标选择音频文件",
+                        fontSize = 13.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                    )
+                    Spacer(Modifier.height(28.dp))
+                }
+
+                ProgressBar(
+                    positionMs = position,
+                    durationMs = durationMs,
+                    onSeek = { player.seekTo(it) }
+                )
+
+                Spacer(Modifier.height(8.dp))
+
+                PlaybackControls(
+                    isPlaying = isPlaying,
+                    isShuffle = shuffle,
+                    repeatMode = repeat,
+                    onPlayPause = { player.togglePlayPause() },
+                    onNext = { player.next() },
+                    onPrevious = { player.previous() },
+                    onShuffle = { player.toggleShuffle() },
+                    onRepeat = { player.cycleRepeat() }
+                )
+
+                Spacer(Modifier.height(32.dp))
+            }
         }
 
         // Effects drawer overlays the bottom of the screen with a scrim.
@@ -188,7 +246,7 @@ fun PlayerScreen() {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .background(Color.Black.copy(alpha = 0.45f))
+                    .background(Color.Black.copy(alpha = 0.5f))
                     .align(Alignment.BottomCenter)
                     .clickable(
                         interactionSource = dismissInteraction,
@@ -237,82 +295,5 @@ fun PlayerScreen() {
             },
             onDismiss = { showPicker = false }
         )
-    }
-}
-
-@Composable
-private fun PlayerContent(
-    currentTrack: Track?,
-    isPlaying: Boolean,
-    positionMs: Long,
-    durationMs: Long,
-    shuffle: Boolean,
-    repeat: com.sodamusic.player.audio.RepeatMode,
-    player: MusicPlayerController,
-    modifier: Modifier = Modifier
-) {
-    Column(
-        modifier = modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(horizontal = 24.dp, vertical = 12.dp),
-        horizontalAlignment = Alignment.CenterHorizontally
-    ) {
-        Spacer(Modifier.height(8.dp))
-
-        // Vinyl album art — the visual centerpiece.
-        AlbumArt(track = currentTrack, isPlaying = isPlaying)
-
-        Spacer(Modifier.height(28.dp))
-
-        currentTrack?.let { track ->
-            Text(
-                track.title,
-                fontSize = 22.sp,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onSurface
-            )
-            Text(
-                track.artist,
-                fontSize = 14.sp,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(top = 4.dp)
-            )
-            Spacer(Modifier.height(20.dp))
-        } ?: run {
-            Text(
-                "未选择音频",
-                fontSize = 18.sp,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            Spacer(Modifier.height(4.dp))
-            Text(
-                "点击右上角音符图标选择音频文件",
-                fontSize = 13.sp,
-                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
-            )
-            Spacer(Modifier.height(20.dp))
-        }
-
-        ProgressBar(
-            positionMs = positionMs,
-            durationMs = durationMs,
-            onSeek = { player.seekTo(it) }
-        )
-
-        Spacer(Modifier.height(12.dp))
-
-        PlaybackControls(
-            isPlaying = isPlaying,
-            isShuffle = shuffle,
-            repeatMode = repeat,
-            onPlayPause = { player.togglePlayPause() },
-            onNext = { player.next() },
-            onPrevious = { player.previous() },
-            onShuffle = { player.toggleShuffle() },
-            onRepeat = { player.cycleRepeat() }
-        )
-
-        Spacer(Modifier.height(24.dp))
     }
 }

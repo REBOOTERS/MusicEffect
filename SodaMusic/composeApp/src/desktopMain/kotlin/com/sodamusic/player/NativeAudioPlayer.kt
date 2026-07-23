@@ -1,8 +1,9 @@
 package com.sodamusic.player
 
 import com.sodamusic.player.audio.NativeAudioPlayer
-import com.sodamusic.player.audio.decode.Mp3Decoder
 import com.sodamusic.player.audio.effects.EffectProcessor
+import com.sodamusic.player.audio.effects.Resampler
+import com.sodamusic.player.audio.decode.Mp3Decoder
 import com.sodamusic.player.model.PlayState
 import com.sodamusic.player.model.Track
 import com.sodamusic.player.model.TrackSource
@@ -29,11 +30,14 @@ import kotlin.math.sin
 
 class DesktopAudioPlayer : NativeAudioPlayer {
 
+    // We output to SourceDataLine at whatever sample rate the source is.
+    // sampleRate property stays 44100 for the EffectProcessor (which is tuned to 44.1k);
+    // when an effect is active we run DSP at 44100 then resample up to the source rate.
     override val sampleRate: Int = 44100
-    private val outputFormat = AudioFormat(44100f, 16, 2, true, false)
 
     private var line: SourceDataLine? = null
     private var playJob: Job? = null
+    private var lineFormat: AudioFormat? = null
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
     private val _playState = MutableStateFlow(PlayState.IDLE)
@@ -47,6 +51,9 @@ class DesktopAudioPlayer : NativeAudioPlayer {
 
     @Volatile
     private var totalDurationMs: Long = 0
+
+    @Volatile
+    private var currentSampleRate: Int = 44100
     override val positionMs: Long get() = _currentPosition.value
     override val durationMs: Long get() = totalDurationMs
 
@@ -55,59 +62,104 @@ class DesktopAudioPlayer : NativeAudioPlayer {
         _playState.value = PlayState.BUFFERING
         _currentPosition.value = 0L
 
-        val dataLine = AudioSystem.getSourceDataLine(outputFormat)
-        dataLine.open(outputFormat, 16384)
-        dataLine.start()
-        line = dataLine
-
         playJob = scope.launch {
-            // Decode first so we know the real duration before publishing PLAYING.
-            val loaded = loadPcm(track)
-            if (loaded == null) {
+            val decoded = decodeToPcm(track)
+            if (decoded == null) {
                 _playState.value = PlayState.ERROR
-                try { dataLine.close() } catch (_: Exception) {}
-                line = null
                 return@launch
             }
-            val (samples, durMs) = loaded
-            totalDurationMs = durMs
-            _playState.value = PlayState.PLAYING
+            val (srcSamples, srcSr, srcChannels) = decoded
+            totalDurationMs = (srcSamples.size / srcChannels) * 1000L / srcSr
+            currentSampleRate = srcSr
 
+            // Final PCM that will be sent to the sound card (interleaved stereo s16 @ outSr).
+            val outSamples: ShortArray
+            val outSr: Int
+            val useEffects = effectProcessor.currentEffect != com.sodamusic.player.audio.effects.AudioEffect.NONE
+
+            if (useEffects) {
+                // DSP is tuned for 44100 Hz. Resample source -> 44100 if needed, run the chain,
+                // then the output stays at 44100 (the OS mixer will handle the last mile).
+                val dspRate = 44100
+                val dspStereo = if (srcSr != dspRate) {
+                    Resampler.resampleStereo(srcSamples, srcSr, dspRate)
+                } else if (srcChannels == 1) {
+                    monoToStereo(srcSamples)
+                } else srcSamples
+
+                val floatBuf = FloatArray(dspStereo.size)
+                for (i in dspStereo.indices) floatBuf[i] = dspStereo[i] / 32768f
+
+                var processed = 0
+                val blockSize = 2048 // frames per processInterleaved call
+                while (processed < dspStereo.size / 2) {
+                    val frames = minOf(blockSize, dspStereo.size / 2 - processed)
+                    effectProcessor.processInterleaved(floatBuf, processed * 2, frames)
+                    processed += frames
+                }
+                outSamples = Resampler.resampleFloatToS16(floatBuf, dspRate, dspRate) // stays at 44100
+                outSr = dspRate
+            } else {
+                // Bypass all DSP — deliver the decoded PCM directly.
+                outSamples = if (srcChannels == 1) monoToStereo(srcSamples) else srcSamples
+                outSr = srcSr
+            }
+
+            // Open the line at the actual output sample rate (zero resampling for bypass path).
+            val outFormat = AudioFormat(outSr.toFloat(), 16, 2, true, false)
+            val dataLine = try {
+                val dl = AudioSystem.getSourceDataLine(outFormat)
+                dl.open(outFormat, 65536) // 64 KB buffer ≈ 340 ms @ 48k stereo s16
+                dl
+            } catch (e: Exception) {
+                // Fallback to 48000 if the native rate isn't supported.
+                val fallbackFormat = AudioFormat(48000f, 16, 2, true, false)
+                val dl = AudioSystem.getSourceDataLine(fallbackFormat)
+                dl.open(fallbackFormat, 65536)
+                dl
+            }
+            dataLine.start()
+            line = dataLine
+            lineFormat = dataLine.format
+            val lineSr = dataLine.format.sampleRate.toInt()
+            val finalSamples = if (lineSr != outSr) {
+                Resampler.resampleStereo(outSamples, outSr, lineSr)
+            } else outSamples
+            val actualOutSr = lineSr
+            totalDurationMs = (finalSamples.size / 2) * 1000L / actualOutSr
+
+            _playState.value = PlayState.PLAYING
             try {
+                val frameSize = 4
+                val chunkFrames = 4096
+                val byteBuf = ByteArray(chunkFrames * frameSize)
                 var offset = 0
-                val frameSize = 4 // stereo * 16-bit
-                val buffer = ByteArray(4096)
-                val floatBuf = FloatArray(4096 / 2)
                 val startNs = System.nanoTime()
 
-                while (isActive && offset < samples.size && _playState.value != PlayState.STOPPED) {
+                while (isActive && offset < finalSamples.size && _playState.value != PlayState.STOPPED) {
                     if (paused) {
                         kotlinx.coroutines.delay(20)
                         continue
                     }
 
-                    val framesToProcess = minOf(buffer.size / frameSize, (samples.size - offset) / 2)
-                    if (framesToProcess <= 0) break
+                    val framesToWrite = minOf(chunkFrames, (finalSamples.size - offset) / 2)
+                    if (framesToWrite <= 0) break
 
-                    for (i in 0 until framesToProcess * 2) {
-                        floatBuf[i] = samples[offset + i] / 32768f
-                    }
-                    effectProcessor.processInterleaved(floatBuf, 0, framesToProcess)
-
-                    for (i in 0 until framesToProcess * 2) {
-                        val s = (floatBuf[i] * 32767f).toInt().coerceIn(-32768, 32767)
+                    for (i in 0 until framesToWrite * 2) {
+                        val s = finalSamples[offset + i].toInt()
                         val bi = i * 2
-                        buffer[bi] = (s and 0xFF).toByte()
-                        buffer[bi + 1] = ((s shr 8) and 0xFF).toByte()
+                        byteBuf[bi] = (s and 0xFF).toByte()
+                        byteBuf[bi + 1] = ((s shr 8) and 0xFF).toByte()
                     }
-                    dataLine.write(buffer, 0, framesToProcess * frameSize)
-                    offset += framesToProcess * 2
-                    _currentPosition.value = (offset / 2L) * 1000L / sampleRate
+                    dataLine.write(byteBuf, 0, framesToWrite * frameSize)
+                    offset += framesToWrite * 2
+                    _currentPosition.value = (offset / 2L) * 1000L / actualOutSr
 
+                    // Light throttling: don't get more than ~250 ms ahead of real time.
                     val elapsedMs = (System.nanoTime() - startNs) / 1_000_000
                     val audioMs = _currentPosition.value
-                    val waitMs = audioMs - elapsedMs
-                    if (waitMs > 5) kotlinx.coroutines.delay(waitMs)
+                    val aheadMs = audioMs - elapsedMs
+                    if (aheadMs > 250) kotlinx.coroutines.delay(aheadMs - 200)
                 }
                 dataLine.drain()
                 _playState.value = PlayState.STOPPED
@@ -117,48 +169,67 @@ class DesktopAudioPlayer : NativeAudioPlayer {
             } finally {
                 try { dataLine.close() } catch (_: Exception) {}
                 line = null
+                lineFormat = null
             }
         }
     }
 
-    /** @return (PCM samples at 44100 Hz stereo s16, duration in ms). Null if nothing can be played. */
-    private fun loadPcm(track: Track): Pair<ShortArray, Long>? {
+    private fun monoToStereo(mono: ShortArray): ShortArray {
+        val out = ShortArray(mono.size * 2)
+        for (i in mono.indices) { out[i * 2] = mono[i]; out[i * 2 + 1] = mono[i] }
+        return out
+    }
+
+    private data class Decoded(val samples: ShortArray, val sampleRate: Int, val channels: Int)
+
+    private fun decodeToPcm(track: Track): Decoded? {
         return when (val s = track.source) {
             is TrackSource.Local -> {
                 val file = File(s.filePath)
-                if (!file.exists()) return generateDemoTone(track.durationMs.coerceAtLeast(60_000), 440f)
+                if (!file.exists()) return decodeDemoTone(track)
                 val lower = s.filePath.lowercase()
                 when {
-                    lower.endsWith(".wav") -> readWav(file.toPath()) ?: generateDemoTone(60_000, 440f)
-                    lower.endsWith(".mp3") -> readMp3(file.toPath()) ?: generateDemoTone(60_000, 440f)
-                    else -> {
-                        // Fallback to a short demo tone so the player doesn't error out.
-                        generateDemoTone(60_000, 440f)
+                    lower.endsWith(".wav") -> {
+                        val wav = readWav(file.toPath()) ?: return decodeDemoTone(track)
+                        Decoded(wav.first, wav.second, wav.third)
                     }
+                    lower.endsWith(".mp3") -> {
+                        val mp3 = Mp3Decoder.decode(file.toPath()) ?: return decodeDemoTone(track)
+                        Decoded(mp3.samples, mp3.sampleRate, mp3.channels)
+                    }
+                    else -> decodeDemoTone(track)
                 }
             }
             is TrackSource.Online -> {
                 if (s.streamUrl.startsWith("demo://")) {
                     val num = s.streamUrl.substringAfterLast("/").toIntOrNull() ?: 1
                     val baseFreq = 220f + (num - 1) * 55f
-                    generateDemoTone(track.durationMs.coerceAtLeast(60_000), baseFreq)
-                } else {
-                    generateDemoTone(track.durationMs.coerceAtLeast(60_000), 440f)
-                }
+                    decodeDemoTone(track, baseFreq)
+                } else decodeDemoTone(track)
             }
         }
     }
 
-    private fun toOutputStereo(raw: ShortArray, inputSr: Int, channels: Int): ShortArray {
-        val stereo = if (channels == 1) {
-            ShortArray(raw.size * 2).also { out ->
-                for (i in raw.indices) { out[i * 2] = raw[i]; out[i * 2 + 1] = raw[i] }
-            }
-        } else raw
-        return if (inputSr != sampleRate) resample(stereo, inputSr, 2) else stereo
+    private fun decodeDemoTone(track: Track, baseFreq: Float = 440f): Decoded {
+        val durMs = track.durationMs.coerceAtLeast(60_000)
+        val totalFrames = (44100 * durMs / 1000).toInt()
+        val out = ShortArray(totalFrames * 2)
+        for (i in 0 until totalFrames) {
+            val t = i.toFloat() / 44100f
+            val env = (sin(PI.toFloat() * t / (durMs / 1000f)) * 0.5f + 0.5f)
+            val sample = (
+                sin(2f * PI.toFloat() * baseFreq * t) * 0.25f +
+                sin(2f * PI.toFloat() * (baseFreq * 1.25f) * t) * 0.20f +
+                sin(2f * PI.toFloat() * (baseFreq * 1.5f) * t) * 0.20f +
+                sin(2f * PI.toFloat() * (baseFreq * 2f) * t) * 0.15f
+                ) * env * 0.7f
+            val s = (sample * 32767f).toInt().toShort()
+            out[i * 2] = s; out[i * 2 + 1] = s
+        }
+        return Decoded(out, 44100, 2)
     }
 
-    private fun readWav(path: Path): Pair<ShortArray, Long>? {
+    private fun readWav(path: Path): Triple<ShortArray, Int, Int>? {
         return try {
             RandomAccessFile(path.toFile(), "r").use { raf ->
                 val riff = ByteArray(4); raf.read(riff)
@@ -190,51 +261,9 @@ class DesktopAudioPlayer : NativeAudioPlayer {
                 for (i in 0 until totalSamples) {
                     raw[i] = ((bb[i * 2 + 1].toInt() shl 8) or (bb[i * 2].toInt() and 0xFF)).toShort()
                 }
-                val out = toOutputStereo(raw, sr, channels)
-                val durationMs = out.size / 2L * 1000L / sampleRate
-                out to durationMs
+                Triple(raw, sr, channels)
             }
         } catch (_: Exception) { null }
-    }
-
-    private fun readMp3(path: Path): Pair<ShortArray, Long>? {
-        val res = Mp3Decoder.decode(path) ?: return null
-        val out = toOutputStereo(res.samples, res.sampleRate, res.channels)
-        // After resampling, recompute duration based on output sample rate.
-        val durationMs = out.size / 2L * 1000L / sampleRate
-        return out to durationMs
-    }
-
-    private fun resample(input: ShortArray, inputSr: Int, channels: Int): ShortArray {
-        val ratio = inputSr.toDouble() / sampleRate
-        val outFrames = (input.size / channels / ratio).toInt()
-        val out = ShortArray(outFrames * channels)
-        for (i in 0 until outFrames) {
-            val srcIdx = minOf((i * ratio).toInt() * channels, input.size - channels)
-            for (c in 0 until channels) {
-                out[i * channels + c] = input[srcIdx + c]
-            }
-        }
-        return out
-    }
-
-    private fun generateDemoTone(durationMs: Long, baseFreq: Float): Pair<ShortArray, Long> {
-        val durMs = durationMs.coerceAtLeast(60_000)
-        val totalFrames = (sampleRate * durMs / 1000).toInt()
-        val out = ShortArray(totalFrames * 2)
-        for (i in 0 until totalFrames) {
-            val t = i.toFloat() / sampleRate
-            val env = (sin(PI.toFloat() * t / (durMs / 1000f)) * 0.5f + 0.5f)
-            val sample = (
-                sin(2f * PI.toFloat() * baseFreq * t) * 0.25f +
-                sin(2f * PI.toFloat() * (baseFreq * 1.25f) * t) * 0.20f +
-                sin(2f * PI.toFloat() * (baseFreq * 1.5f) * t) * 0.20f +
-                sin(2f * PI.toFloat() * (baseFreq * 2f) * t) * 0.15f
-            ) * env * 0.7f
-            val s = (sample * 32767f).toInt().toShort()
-            out[i * 2] = s; out[i * 2 + 1] = s
-        }
-        return out to durMs
     }
 
     override fun pause() {
@@ -256,6 +285,7 @@ class DesktopAudioPlayer : NativeAudioPlayer {
         playJob = null
         try { line?.stop(); line?.close() } catch (_: Exception) {}
         line = null
+        lineFormat = null
     }
 
     override fun seekTo(positionMs: Long) { _currentPosition.value = positionMs }

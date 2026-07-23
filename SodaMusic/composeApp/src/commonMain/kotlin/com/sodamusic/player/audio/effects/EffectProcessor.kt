@@ -2,12 +2,15 @@ package com.sodamusic.player.audio.effects
 
 import kotlin.math.PI
 import kotlin.math.sin
+import kotlin.math.tanh
 import kotlin.random.Random
 
 /**
  * Chains all DSP blocks: EQ (bank of biquads) -> compressor ->
  * stereo widener -> delay -> reverb. configure() applies a preset.
  * Processes interleaved stereo float blocks [-1, 1].
+ *
+ * All internal scratch buffers are reused across calls to avoid GC pressure.
  */
 class EffectProcessor(private val sampleRate: Int) {
 
@@ -22,6 +25,12 @@ class EffectProcessor(private val sampleRate: Int) {
     private val widener = StereoWidener()
     private val delay = DelayProcessor(sampleRate)
     private val reverb = ReverbProcessor(sampleRate)
+
+    // Reusable scratch buffers. Grown on first use and reused thereafter.
+    private var left = FloatArray(0)
+    private var right = FloatArray(0)
+    private var tmpL = FloatArray(0)
+    private var tmpR = FloatArray(0)
 
     // Vintage effect: soft saturation + wow/flutter
     private var saturation = 0f
@@ -52,7 +61,6 @@ class EffectProcessor(private val sampleRate: Int) {
             AudioEffect.NONE -> { /* neutral */ }
 
             AudioEffect.SMART -> {
-                // Gentle enhancement: slight bass lift, presence boost
                 eqLowShelf.setLowShelf(150f, 3f)
                 eqHighShelf.setHighShelf(8000f, 2f)
                 eqMid.setPeaking(3000f, 1.5f, 2f)
@@ -91,7 +99,7 @@ class EffectProcessor(private val sampleRate: Int) {
             }
 
             AudioEffect.HIFI_LIVE -> {
-                reverb.setMix(0.35f)
+                reverb.setMix(0.3f)
                 widener.setWidth(1.4f)
                 eqHighShelf.setHighShelf(7000f, 3f)
                 eqLowShelf.setLowShelf(120f, 2f)
@@ -126,37 +134,47 @@ class EffectProcessor(private val sampleRate: Int) {
                 reverb.setMix(0.08f)
             }
         }
+
+        // Full reset on preset change so filter/delay/reverb state doesn't leak.
+        reset()
     }
 
     /**
      * Process interleaved stereo buffer [L,R,L,R,...] in place.
-     * Frame count = buffer.size / 2.
+     * Frame count = buffer.size / 2 (measured from [offset]).
      */
     fun processInterleaved(buffer: FloatArray, offset: Int, frameCount: Int) {
+        // Grow scratch buffers if needed.
+        if (left.size < frameCount) {
+            left = FloatArray(frameCount)
+            right = FloatArray(frameCount)
+            tmpL = FloatArray(frameCount)
+            tmpR = FloatArray(frameCount)
+        }
+
         // Deinterleave to temporary L/R
-        val left = FloatArray(frameCount)
-        val right = FloatArray(frameCount)
         for (i in 0 until frameCount) {
             left[i] = buffer[offset + i * 2]
             right[i] = buffer[offset + i * 2 + 1]
         }
 
         // EQ chain (per-channel)
-        applyEq(left)
-        applyEq(right)
+        applyEq(left, frameCount)
+        applyEq(right, frameCount)
 
-        // Compression (per-channel)
+        // Compression (per-channel) — DO NOT reset compressor per block!
+        // Envelope must track continuously across block boundaries.
         for (i in 0 until frameCount) {
             left[i] = compressor.processSample(left[i])
             right[i] = compressor.processSample(right[i])
         }
-        compressor.reset()
 
-        // Saturation
+        // Saturation (tanh-based soft clip replaces hard clipping)
         if (saturation > 0f) {
+            val drive = 1f + saturation * 4f
             for (i in 0 until frameCount) {
-                left[i] = softClip(left[i], saturation)
-                right[i] = softClip(right[i], saturation)
+                left[i] = tanh(left[i] * drive)
+                right[i] = tanh(right[i] * drive)
             }
         }
 
@@ -177,8 +195,6 @@ class EffectProcessor(private val sampleRate: Int) {
         }
 
         // Delay + Reverb
-        val tmpL = FloatArray(frameCount)
-        val tmpR = FloatArray(frameCount)
         for (i in 0 until frameCount) {
             val (l, r) = delay.processStereo(left[i], right[i])
             tmpL[i] = l; tmpR[i] = r
@@ -188,28 +204,19 @@ class EffectProcessor(private val sampleRate: Int) {
             right[i] = reverb.processSample(tmpR[i])
         }
 
-        // Re-interleave
+        // Re-interleave with soft tanh safety clip to avoid DAC overflow.
         for (i in 0 until frameCount) {
-            buffer[offset + i * 2] = left[i].coerceIn(-1f, 1f)
-            buffer[offset + i * 2 + 1] = right[i].coerceIn(-1f, 1f)
+            buffer[offset + i * 2] = tanh(left[i].toDouble()).toFloat()
+            buffer[offset + i * 2 + 1] = tanh(right[i].toDouble()).toFloat()
         }
     }
 
-    private fun applyEq(channel: FloatArray) {
-        eqLowShelf.processBlock(channel, channel, 0, channel.size)
-        eqLowMid.processBlock(channel, channel, 0, channel.size)
-        eqMid.processBlock(channel, channel, 0, channel.size)
-        eqHighMid.processBlock(channel, channel, 0, channel.size)
-        eqHighShelf.processBlock(channel, channel, 0, channel.size)
-    }
-
-    private fun softClip(x: Float, drive: Float): Float {
-        val d = 1f + drive * 4f
-        val y = x * d
-        // tanh-like soft clipper
-        return if (y > 1f) 1f - 1f / (y * y + 1f)
-        else if (y < -1f) -1f + 1f / (y * y + 1f)
-        else y - y * y * y / 3f
+    private fun applyEq(channel: FloatArray, n: Int) {
+        eqLowShelf.processBlock(channel, channel, 0, n)
+        eqLowMid.processBlock(channel, channel, 0, n)
+        eqMid.processBlock(channel, channel, 0, n)
+        eqHighMid.processBlock(channel, channel, 0, n)
+        eqHighShelf.processBlock(channel, channel, 0, n)
     }
 
     fun reset() {
@@ -217,4 +224,3 @@ class EffectProcessor(private val sampleRate: Int) {
         compressor.reset(); widener.setWidth(1f); delay.reset(); reverb.reset()
     }
 }
-

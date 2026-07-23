@@ -1,9 +1,10 @@
 package com.sodamusic.player.utils
 
-/**
- * Android: native SAF picker not yet wired through expect/actual.
- * Caller falls back to manual path entry.
- */
-actual val hasNativeFilePicker: Boolean = false
+import com.sodamusic.player.AndroidFilePicker
 
-actual fun openAudioFilePicker(): String? = null
+internal actual val hasNativeFilePickerImpl: Boolean = true
+
+internal actual suspend fun openAudioFilePickerImpl(): String? {
+    // Suspends until the user picks a file or cancels. Requires MainActivity.attach().
+    return AndroidFilePicker.pick()
+}

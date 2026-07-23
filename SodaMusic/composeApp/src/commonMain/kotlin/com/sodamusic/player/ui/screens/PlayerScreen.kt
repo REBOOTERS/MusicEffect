@@ -87,32 +87,50 @@ fun PlayerScreen() {
     val durationMs = player.durationMs.coerceAtLeast(currentTrack?.durationMs ?: 0L)
     val isPlaying = playState == PlayState.PLAYING
 
-    fun pickAndPlayLocal(path: String) {
+    fun pickAndPlayLocal(picked: String) {
+        val isContentUri = picked.startsWith("content://")
+        val displayName = if (isContentUri) {
+            // content://com.android.externalstorage/.../foo.mp3 -> take last path segment.
+            picked.substringAfterLast('%').substringAfterLast('/').substringBeforeLast('.')
+                .ifBlank { picked.substringAfterLast('/').substringBeforeLast('.').ifBlank { "音频文件" } }
+        } else {
+            picked.substringAfterLast('/').substringAfterLast('\\')
+                .substringBeforeLast('.').ifBlank { picked }
+        }
+        val source = if (isContentUri) TrackSource.ContentUri(picked) else TrackSource.Local(picked)
         val track = Track(
-            id = "local_$path",
-            title = path.substringAfterLast('/').substringAfterLast('\\')
-                .substringBeforeLast('.').ifBlank { path },
+            id = "local_$picked",
+            title = displayName,
             artist = "本地文件",
-            source = TrackSource.Local(path)
+            source = source
         )
         player.setQueue(demoTracks + track)
         player.play(track)
     }
 
-    // Auto-play on first launch: desktop uses the configured startup file (caee.mp3);
-    // mobile opens the in-app picker.
+    // Auto-play on first launch:
+    //  - Desktop: if caee.mp3 is available at the well-known path, play it directly.
+    //  - Android (and other native-picker platforms): open the system file picker so the
+    //    user chooses a real audio file.
+    //  - Otherwise open the in-app TrackPicker (which lists demos + local/online tabs).
     var autoOpened by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) {
         if (autoOpened || currentTrack != null) return@LaunchedEffect
         autoOpened = true
         val startupPath = getStartupTrackPath()
-        if (startupPath != null) {
-            pickAndPlayLocal(startupPath)
-        } else if (hasNativeFilePicker) {
-            val picked = withContext(Dispatchers.IO) { openAudioFilePicker() }
-            if (!picked.isNullOrBlank()) pickAndPlayLocal(picked.trim())
-        } else {
-            showPicker = true
+        when {
+            startupPath != null -> pickAndPlayLocal(startupPath)
+            hasNativeFilePicker -> {
+                val picked = withContext(Dispatchers.IO) { openAudioFilePicker() }
+                if (!picked.isNullOrBlank()) {
+                    pickAndPlayLocal(picked.trim())
+                } else {
+                    // User cancelled the system picker — fall back to in-app dialog so
+                    // they can at least pick a demo track.
+                    showPicker = true
+                }
+            }
+            else -> showPicker = true
         }
     }
 

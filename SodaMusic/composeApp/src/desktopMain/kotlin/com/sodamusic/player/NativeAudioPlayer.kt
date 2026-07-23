@@ -184,6 +184,7 @@ class DesktopAudioPlayer : NativeAudioPlayer {
 
     private fun decodeToPcm(track: Track): Decoded? {
         return when (val s = track.source) {
+            is TrackSource.ContentUri -> decodeDemoTone(track) // desktop doesn't use content URIs
             is TrackSource.Local -> {
                 val file = File(s.filePath)
                 if (!file.exists()) return decodeDemoTone(track)

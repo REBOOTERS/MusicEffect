@@ -1,19 +1,21 @@
 package com.sodamusic.player.utils
 
 /**
- * Opens a platform-native file chooser for audio files.
- * - Desktop: shows a modal JFileChooser filtered to common audio extensions.
- * - Android / iOS: currently returns null (no native picker wired up yet);
- *   callers should fall back to manual path entry.
+ * Opens a platform-native file chooser for audio files. Suspends until the user selects
+ * a file or cancels.
  *
- * @return absolute path of the selected file, or `null` if the user cancelled
- *         or the platform has no native picker.
+ * - Desktop: modal JFileChooser filtered to common audio extensions. Returns absolute path.
+ * - Android: launches the system Storage Access Framework (SAF) audio picker; returns a
+ *   `content://...` URI wrapped as a string (the Android MediaExtractor can read it directly).
+ * - iOS: returns null (not yet implemented).
+ *
+ * @return absolute file path (desktop) / content URI (android), or null on cancel.
  */
-expect fun openAudioFilePicker(): String?
+suspend fun openAudioFilePicker(): String? = openAudioFilePickerImpl()
 
-/**
- * True when the platform provides a native modal file picker (Desktop/JVM).
- * Used to decide whether to skip the in-app TrackPicker dialog and drive
- * the flow straight from the native chooser.
- */
-expect val hasNativeFilePicker: Boolean
+/** True when the platform provides a native modal audio picker (Desktop + Android). */
+val hasNativeFilePicker: Boolean = hasNativeFilePickerImpl
+
+// Internal expect/actual bridge so the public suspend API is clean.
+internal expect suspend fun openAudioFilePickerImpl(): String?
+internal expect val hasNativeFilePickerImpl: Boolean

@@ -113,7 +113,7 @@ fun TrackPicker(
                         OutlinedTextField(
                             value = path,
                             onValueChange = { path = it },
-                            label = { Text("本地文件路径 (如 /path/to/song.mp3)") },
+                            label = { Text("音频文件路径或内容 URI") },
                             singleLine = true,
                             modifier = Modifier.fillMaxWidth()
                         )
@@ -122,8 +122,8 @@ fun TrackPicker(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            // Desktop: opens a native JFileChooser (runs on Swing EDT via IO).
-                            // Mobile: actual returns null immediately, click is a no-op.
+                            // On desktop opens a JFileChooser; on Android launches the system
+                            // SAF audio picker; on iOS is a no-op.
                             OutlinedButton(
                                 onClick = {
                                     scope.launch {

@@ -9,7 +9,13 @@ import com.sodamusic.player.ui.App
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        AndroidFilePicker.attach(this)
         enableEdgeToEdge()
         setContent { App() }
+    }
+
+    override fun onDestroy() {
+        AndroidFilePicker.detach()
+        super.onDestroy()
     }
 }

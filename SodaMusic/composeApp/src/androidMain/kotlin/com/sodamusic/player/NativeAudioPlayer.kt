@@ -1,12 +1,14 @@
 package com.sodamusic.player
 
 import com.sodamusic.player.audio.NativeAudioPlayer
+import android.content.Context
 import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioTrack
 import android.media.MediaCodec
 import android.media.MediaExtractor
 import android.media.MediaFormat
+import android.net.Uri
 import com.sodamusic.player.audio.effects.EffectProcessor
 import com.sodamusic.player.model.PlayState
 import com.sodamusic.player.model.Track
@@ -265,8 +267,12 @@ class AndroidAudioPlayer : NativeAudioPlayer {
 
     private fun setupDecoder(track: Track) {
         val ext = MediaExtractor()
+        val ctx = appContext
         when (val src = track.source) {
             is TrackSource.Local -> ext.setDataSource(src.filePath)
+            is TrackSource.ContentUri -> {
+                ext.setDataSource(ctx, Uri.parse(src.uri), null)
+            }
             is TrackSource.Online -> ext.setDataSource(src.streamUrl, src.headers)
         }
         val trackIdx = ext.sampleTrackIndex
@@ -278,6 +284,11 @@ class AndroidAudioPlayer : NativeAudioPlayer {
             configure(format, null, null, 0)
             start()
         }
+    }
+
+    companion object {
+        /** App context set up by the app initializer so the player can reach ContentResolver. */
+        lateinit var appContext: Context
     }
 
     override fun pause() {

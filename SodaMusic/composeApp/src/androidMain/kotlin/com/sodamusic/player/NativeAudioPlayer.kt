@@ -1,6 +1,7 @@
 package com.sodamusic.player
 
 import android.content.Context
+import android.Manifest
 import android.media.AudioAttributes
 import android.media.MediaPlayer
 import android.media.audiofx.Visualizer
@@ -122,11 +123,18 @@ class AndroidAudioPlayer : NativeAudioPlayer {
     }
 
     private fun attachVisualizer(sessionId: Int) {
+        // Visualizer requires RECORD_AUDIO at runtime; request it before creating one.
+        scope.launch {
+            val granted = AndroidFilePicker.requestPermission(Manifest.permission.RECORD_AUDIO)
+            if (granted) attachVisualizerInternal(sessionId)
+        }
+    }
+
+    private fun attachVisualizerInternal(sessionId: Int) {
         detachVisualizer()
         try {
             val viz = Visualizer(sessionId)
             val captureSize = Visualizer.getCaptureSizeRange().let {
-                // Pick a moderate capture size so per-band grouping is smooth.
                 it.getOrElse(1) { 256 }
             }
             viz.captureSize = captureSize.coerceAtLeast(64)

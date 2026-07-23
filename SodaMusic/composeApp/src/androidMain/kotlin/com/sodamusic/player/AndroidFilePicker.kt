@@ -81,12 +81,20 @@ object AndroidFilePicker {
      * user approves; false on denial (caller should fall back to the SAF file picker).
      */
     suspend fun ensureAudioPermission(): Boolean {
-        val activity = activityRef?.get() ?: return false
         val perm = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             Manifest.permission.READ_MEDIA_AUDIO
         } else {
             Manifest.permission.READ_EXTERNAL_STORAGE
         }
+        return requestPermission(perm)
+    }
+
+    /**
+     * Requests an arbitrary runtime permission, returning true if granted.
+     * Used for RECORD_AUDIO (Visualizer) and READ_MEDIA_AUDIO (MediaStore scan).
+     */
+    suspend fun requestPermission(perm: String): Boolean {
+        val activity = activityRef?.get() ?: return false
         if (ContextCompat.checkSelfPermission(activity, perm) == PackageManager.PERMISSION_GRANTED) {
             return true
         }

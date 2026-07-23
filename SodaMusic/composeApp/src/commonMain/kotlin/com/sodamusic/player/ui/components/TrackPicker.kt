@@ -83,18 +83,24 @@ fun TrackPicker(
                     Tab.Local -> {
                         var scanned by remember { mutableStateOf<List<Track>?>(null) }
                         val scope = rememberCoroutineScope()
-                        LaunchedEffect(Unit) {
-                            scanned = withContext(Dispatchers.IO) { scanLocalTracks() }
+                        fun rescan() {
+                            scanned = null
+                            scope.launch {
+                                scanned = withContext(Dispatchers.IO) { scanLocalTracks() }
+                            }
                         }
+                        LaunchedEffect(Unit) { rescan() }
                         val list = scanned
                         if (list == null) {
                             Text("正在扫描本地音乐…", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
                         } else if (list.isEmpty()) {
                             Text(
-                                "未找到本地音乐（请授予音频访问权限，或点下方按钮手动选择文件）",
+                                "未找到本地音乐。请授予音频访问权限后重试，或点下方按钮手动选择文件。",
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 fontSize = 13.sp
                             )
+                            Spacer(Modifier.height(6.dp))
+                            OutlinedButton(onClick = { rescan() }) { Text("重新扫描 / 授权") }
                         } else {
                             Text(
                                 "共 ${list.size} 首",

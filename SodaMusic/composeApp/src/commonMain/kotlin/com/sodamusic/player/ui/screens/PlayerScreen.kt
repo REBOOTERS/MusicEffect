@@ -14,9 +14,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Equalizer
 import androidx.compose.material.icons.filled.LibraryMusic
@@ -55,7 +53,6 @@ import com.sodamusic.player.ui.components.CoverArt
 import com.sodamusic.player.ui.components.EffectsDrawer
 import com.sodamusic.player.ui.components.PlaybackControls
 import com.sodamusic.player.ui.components.ProgressBar
-import com.sodamusic.player.ui.components.SpectrumVisualizer
 import com.sodamusic.player.ui.components.TrackPicker
 import com.sodamusic.player.utils.getStartupTrackPath
 import com.sodamusic.player.utils.hasNativeFilePicker
@@ -197,54 +194,54 @@ fun PlayerScreen() {
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(innerPadding)
-                    .verticalScroll(rememberScrollState())
-                    .padding(horizontal = 32.dp, vertical = 16.dp),
-                horizontalAlignment = Alignment.CenterHorizontally
+                    .padding(horizontal = 28.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Top
             ) {
-                Spacer(Modifier.height(12.dp))
+                Spacer(Modifier.weight(0.4f))
 
-                CoverArt(track = currentTrack, isPlaying = isPlaying)
+                // Cover with the live spectrum rendered inside it (no separate row).
+                CoverArt(track = currentTrack, isPlaying = isPlaying, spectrum = spectrum)
 
-                Spacer(Modifier.height(32.dp))
+                Spacer(Modifier.height(18.dp))
 
                 currentTrack?.let { track ->
                     Text(
                         track.title,
-                        fontSize = 22.sp,
+                        fontSize = 21.sp,
                         fontWeight = FontWeight.SemiBold,
-                        color = MaterialTheme.colorScheme.onSurface
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1
                     )
                     Text(
                         track.artist,
-                        fontSize = 14.sp,
+                        fontSize = 13.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(top = 6.dp)
+                        modifier = Modifier.padding(top = 4.dp),
+                        maxLines = 1
                     )
-                    Spacer(Modifier.height(14.dp))
+                    Spacer(Modifier.height(10.dp))
                     // Current-effect pill — tap to open the effects drawer.
                     EffectChip(
                         effectName = currentEffect.displayName,
                         isActive = currentEffect != com.sodamusic.player.audio.effects.AudioEffect.NONE,
                         onClick = { showEffects = true }
                     )
-                    Spacer(Modifier.height(18.dp))
-                    // Live spectrum driven by the player.
-                    SpectrumVisualizer(levels = spectrum)
-                    Spacer(Modifier.height(18.dp))
                 } ?: run {
                     Text(
                         "未选择音频",
-                        fontSize = 18.sp,
+                        fontSize = 17.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-                    Spacer(Modifier.height(4.dp))
                     Text(
                         "点击右上角音符图标选择音频文件",
                         fontSize = 13.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                        modifier = Modifier.padding(top = 4.dp)
                     )
-                    Spacer(Modifier.height(28.dp))
                 }
+
+                Spacer(Modifier.weight(0.6f))
 
                 ProgressBar(
                     positionMs = position,
@@ -252,7 +249,7 @@ fun PlayerScreen() {
                     onSeek = { player.seekTo(it) }
                 )
 
-                Spacer(Modifier.height(8.dp))
+                Spacer(Modifier.height(4.dp))
 
                 PlaybackControls(
                     isPlaying = isPlaying,
@@ -265,7 +262,7 @@ fun PlayerScreen() {
                     onRepeat = { player.cycleRepeat() }
                 )
 
-                Spacer(Modifier.height(32.dp))
+                Spacer(Modifier.height(24.dp))
             }
         }
 

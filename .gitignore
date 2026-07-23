@@ -56,3 +56,8 @@ Thumbs.db
 *.tmp
 .tmp/
 **/.tmp/
+
+# Local test assets / working reference screenshots
+caee.mp3
+demo*.png
+guide.txt

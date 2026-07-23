@@ -1,6 +1,7 @@
 package com.sodamusic.player
 
 import com.sodamusic.player.audio.NativeAudioPlayer
+import com.sodamusic.player.audio.decode.Mp3Decoder
 import com.sodamusic.player.audio.effects.EffectProcessor
 import com.sodamusic.player.model.PlayState
 import com.sodamusic.player.model.Track
@@ -16,10 +17,12 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.io.File
 import java.io.RandomAccessFile
+import java.nio.file.Path
 import javax.sound.sampled.AudioFormat
 import javax.sound.sampled.AudioSystem
 import javax.sound.sampled.FloatControl
 import javax.sound.sampled.SourceDataLine
+import kotlin.io.path.Path
 import kotlin.math.PI
 import kotlin.math.min
 import kotlin.math.sin
@@ -27,7 +30,7 @@ import kotlin.math.sin
 class DesktopAudioPlayer : NativeAudioPlayer {
 
     override val sampleRate: Int = 44100
-    private val format = AudioFormat(44100f, 16, 2, true, false)
+    private val outputFormat = AudioFormat(44100f, 16, 2, true, false)
 
     private var line: SourceDataLine? = null
     private var playJob: Job? = null
@@ -41,29 +44,36 @@ class DesktopAudioPlayer : NativeAudioPlayer {
 
     @Volatile
     private var paused = false
-    private var totalDurationMs: Long = 0
 
+    @Volatile
+    private var totalDurationMs: Long = 0
     override val positionMs: Long get() = _currentPosition.value
     override val durationMs: Long get() = totalDurationMs
 
     override fun play(track: Track, effectProcessor: EffectProcessor) {
         stop()
         _playState.value = PlayState.BUFFERING
-        totalDurationMs = track.durationMs
+        _currentPosition.value = 0L
 
-        val dataLine = AudioSystem.getSourceDataLine(format)
-        dataLine.open(format, 16384)
+        val dataLine = AudioSystem.getSourceDataLine(outputFormat)
+        dataLine.open(outputFormat, 16384)
         dataLine.start()
         line = dataLine
 
         playJob = scope.launch {
+            // Decode first so we know the real duration before publishing PLAYING.
+            val loaded = loadPcm(track)
+            if (loaded == null) {
+                _playState.value = PlayState.ERROR
+                try { dataLine.close() } catch (_: Exception) {}
+                line = null
+                return@launch
+            }
+            val (samples, durMs) = loaded
+            totalDurationMs = durMs
             _playState.value = PlayState.PLAYING
+
             try {
-                val samples = loadPcm(track)
-                if (samples == null || samples.isEmpty()) {
-                    _playState.value = PlayState.ERROR
-                    return@launch
-                }
                 var offset = 0
                 val frameSize = 4 // stereo * 16-bit
                 val buffer = ByteArray(4096)
@@ -104,20 +114,27 @@ class DesktopAudioPlayer : NativeAudioPlayer {
             } catch (e: Exception) {
                 e.printStackTrace()
                 _playState.value = PlayState.ERROR
+            } finally {
+                try { dataLine.close() } catch (_: Exception) {}
+                line = null
             }
         }
     }
 
-    private fun loadPcm(track: Track): ShortArray? {
+    /** @return (PCM samples at 44100 Hz stereo s16, duration in ms). Null if nothing can be played. */
+    private fun loadPcm(track: Track): Pair<ShortArray, Long>? {
         return when (val s = track.source) {
             is TrackSource.Local -> {
                 val file = File(s.filePath)
-                if (s.filePath.lowercase().endsWith(".wav") && file.exists()) {
-                    try { readWav(file) } catch (_: Exception) {
-                        generateDemoTone(track.durationMs.coerceAtLeast(60_000), 440f)
+                if (!file.exists()) return generateDemoTone(track.durationMs.coerceAtLeast(60_000), 440f)
+                val lower = s.filePath.lowercase()
+                when {
+                    lower.endsWith(".wav") -> readWav(file.toPath()) ?: generateDemoTone(60_000, 440f)
+                    lower.endsWith(".mp3") -> readMp3(file.toPath()) ?: generateDemoTone(60_000, 440f)
+                    else -> {
+                        // Fallback to a short demo tone so the player doesn't error out.
+                        generateDemoTone(60_000, 440f)
                     }
-                } else {
-                    generateDemoTone(track.durationMs.coerceAtLeast(60_000), 440f)
                 }
             }
             is TrackSource.Online -> {
@@ -132,46 +149,60 @@ class DesktopAudioPlayer : NativeAudioPlayer {
         }
     }
 
-    private fun readWav(file: File): ShortArray {
-        RandomAccessFile(file, "r").use { raf ->
-            val riff = ByteArray(4); raf.read(riff)
-            raf.readInt()
-            val wave = ByteArray(4); raf.read(wave)
-            var sr = 44100; var channels = 2; var bits = 16; var dataSize = 0L
-            while (raf.filePointer < raf.length()) {
-                val id = ByteArray(4); raf.read(id)
-                val size = raf.readInt().toLong() and 0xFFFFFFFFL
-                when (String(id)) {
-                    "fmt " -> {
-                        raf.readShort()
-                        channels = raf.readShort().toInt() and 0xFFFF
-                        sr = raf.readInt()
-                        raf.readInt()
-                        raf.readShort()
-                        bits = raf.readShort().toInt() and 0xFFFF
-                        if (size > 16) raf.skipBytes((size - 16).toInt())
+    private fun toOutputStereo(raw: ShortArray, inputSr: Int, channels: Int): ShortArray {
+        val stereo = if (channels == 1) {
+            ShortArray(raw.size * 2).also { out ->
+                for (i in raw.indices) { out[i * 2] = raw[i]; out[i * 2 + 1] = raw[i] }
+            }
+        } else raw
+        return if (inputSr != sampleRate) resample(stereo, inputSr, 2) else stereo
+    }
+
+    private fun readWav(path: Path): Pair<ShortArray, Long>? {
+        return try {
+            RandomAccessFile(path.toFile(), "r").use { raf ->
+                val riff = ByteArray(4); raf.read(riff)
+                raf.readInt()
+                val wave = ByteArray(4); raf.read(wave)
+                var sr = 44100; var channels = 2; var bits = 16; var dataSize = 0L
+                while (raf.filePointer < raf.length()) {
+                    val id = ByteArray(4); raf.read(id)
+                    val size = raf.readInt().toLong() and 0xFFFFFFFFL
+                    when (String(id)) {
+                        "fmt " -> {
+                            raf.readShort()
+                            channels = raf.readShort().toInt() and 0xFFFF
+                            sr = raf.readInt()
+                            raf.readInt()
+                            raf.readShort()
+                            bits = raf.readShort().toInt() and 0xFFFF
+                            if (size > 16) raf.skipBytes((size - 16).toInt())
+                        }
+                        "data" -> { dataSize = size; break }
+                        else -> raf.skipBytes(size.toInt())
                     }
-                    "data" -> { dataSize = size; break }
-                    else -> raf.skipBytes(size.toInt())
                 }
+                if (dataSize == 0L || bits != 16) return null
+                val totalSamples = (dataSize / 2).toInt()
+                val raw = ShortArray(totalSamples)
+                val bb = ByteArray(dataSize.toInt())
+                raf.readFully(bb)
+                for (i in 0 until totalSamples) {
+                    raw[i] = ((bb[i * 2 + 1].toInt() shl 8) or (bb[i * 2].toInt() and 0xFF)).toShort()
+                }
+                val out = toOutputStereo(raw, sr, channels)
+                val durationMs = out.size / 2L * 1000L / sampleRate
+                out to durationMs
             }
-            if (dataSize == 0L || bits != 16) return ShortArray(0)
-            val totalSamples = (dataSize / 2).toInt()
-            val raw = ShortArray(totalSamples)
-            val bb = ByteArray(dataSize.toInt())
-            raf.readFully(bb)
-            for (i in 0 until totalSamples) {
-                raw[i] = ((bb[i * 2 + 1].toInt() shl 8) or (bb[i * 2].toInt() and 0xFF)).toShort()
-            }
-            totalDurationMs = totalSamples / channels * 1000L / sr
-            return if (channels == 1) {
-                val stereo = ShortArray(totalSamples * 2)
-                for (i in 0 until totalSamples) { stereo[i * 2] = raw[i]; stereo[i * 2 + 1] = raw[i] }
-                if (sr != sampleRate) resample(stereo, sr, 2) else stereo
-            } else {
-                if (sr != sampleRate) resample(raw, sr, 2) else raw
-            }
-        }
+        } catch (_: Exception) { null }
+    }
+
+    private fun readMp3(path: Path): Pair<ShortArray, Long>? {
+        val res = Mp3Decoder.decode(path) ?: return null
+        val out = toOutputStereo(res.samples, res.sampleRate, res.channels)
+        // After resampling, recompute duration based on output sample rate.
+        val durationMs = out.size / 2L * 1000L / sampleRate
+        return out to durationMs
     }
 
     private fun resample(input: ShortArray, inputSr: Int, channels: Int): ShortArray {
@@ -187,7 +218,7 @@ class DesktopAudioPlayer : NativeAudioPlayer {
         return out
     }
 
-    private fun generateDemoTone(durationMs: Long, baseFreq: Float): ShortArray {
+    private fun generateDemoTone(durationMs: Long, baseFreq: Float): Pair<ShortArray, Long> {
         val durMs = durationMs.coerceAtLeast(60_000)
         val totalFrames = (sampleRate * durMs / 1000).toInt()
         val out = ShortArray(totalFrames * 2)
@@ -203,8 +234,7 @@ class DesktopAudioPlayer : NativeAudioPlayer {
             val s = (sample * 32767f).toInt().toShort()
             out[i * 2] = s; out[i * 2 + 1] = s
         }
-        totalDurationMs = durMs
-        return out
+        return out to durMs
     }
 
     override fun pause() {
@@ -243,6 +273,3 @@ class DesktopAudioPlayer : NativeAudioPlayer {
         scope.coroutineContext[Job]?.cancel()
     }
 }
-
-
-

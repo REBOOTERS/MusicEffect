@@ -2,6 +2,7 @@ package com.sodamusic.player
 
 import com.sodamusic.player.audio.NativeAudioPlayer
 import com.sodamusic.player.audio.effects.EffectProcessor
+import com.sodamusic.player.audio.effects.FFT
 import com.sodamusic.player.audio.effects.Resampler
 import com.sodamusic.player.audio.decode.Mp3Decoder
 import com.sodamusic.player.model.PlayState
@@ -45,6 +46,9 @@ class DesktopAudioPlayer : NativeAudioPlayer {
 
     private val _currentPosition = MutableStateFlow(0L)
     override val currentPosition: StateFlow<Long> = _currentPosition.asStateFlow()
+
+    private val _spectrum = MutableStateFlow(FloatArray(32))
+    override val spectrum: StateFlow<FloatArray> = _spectrum.asStateFlow()
 
     @Volatile
     private var paused = false
@@ -155,6 +159,10 @@ class DesktopAudioPlayer : NativeAudioPlayer {
                     offset += framesToWrite * 2
                     _currentPosition.value = (offset / 2L) * 1000L / actualOutSr
 
+                    // Drive the visualizer: take a mono 256-sample window around the playhead
+                    // and run a small FFT. Cheap enough to do each chunk (~85 ms apart).
+                    updateSpectrum(finalSamples, offset)
+
                     // Light throttling: don't get more than ~250 ms ahead of real time.
                     val elapsedMs = (System.nanoTime() - startNs) / 1_000_000
                     val audioMs = _currentPosition.value
@@ -178,6 +186,21 @@ class DesktopAudioPlayer : NativeAudioPlayer {
         val out = ShortArray(mono.size * 2)
         for (i in mono.indices) { out[i * 2] = mono[i]; out[i * 2 + 1] = mono[i] }
         return out
+    }
+
+    /** Window the interleaved-stereo PCM around [head], downmix to mono, FFT -> bands. */
+    private fun updateSpectrum(samples: ShortArray, head: Int) {
+        val window = 256
+        if (samples.size < window * 2) return
+        val startBase = (head / 2 - window / 2) * 2
+        val start = startBase.coerceIn(0, samples.size - window * 2)
+        val mono = FloatArray(window)
+        for (i in 0 until window) {
+            val s0 = samples[start + i * 2].toInt()
+            val s1 = samples[start + i * 2 + 1].toInt()
+            mono[i] = ((s0 + s1) / 2).toFloat() / 32768f
+        }
+        _spectrum.value = FFT.computeBands(mono, 32)
     }
 
     private data class Decoded(val samples: ShortArray, val sampleRate: Int, val channels: Int)
@@ -282,6 +305,7 @@ class DesktopAudioPlayer : NativeAudioPlayer {
     override fun stop() {
         paused = false
         _playState.value = PlayState.STOPPED
+        _spectrum.value = FloatArray(32)
         playJob?.cancel()
         playJob = null
         try { line?.stop(); line?.close() } catch (_: Exception) {}

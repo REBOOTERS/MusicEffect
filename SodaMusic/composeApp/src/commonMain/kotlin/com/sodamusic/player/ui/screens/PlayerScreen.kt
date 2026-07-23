@@ -1,11 +1,13 @@
 package com.sodamusic.player.ui.screens
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -13,6 +15,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Equalizer
@@ -36,6 +39,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.compositeOver
@@ -51,6 +55,7 @@ import com.sodamusic.player.ui.components.CoverArt
 import com.sodamusic.player.ui.components.EffectsDrawer
 import com.sodamusic.player.ui.components.PlaybackControls
 import com.sodamusic.player.ui.components.ProgressBar
+import com.sodamusic.player.ui.components.SpectrumVisualizer
 import com.sodamusic.player.ui.components.TrackPicker
 import com.sodamusic.player.utils.getStartupTrackPath
 import com.sodamusic.player.utils.hasNativeFilePicker
@@ -70,6 +75,7 @@ fun PlayerScreen() {
     val currentEffect by player.currentEffect.collectAsState()
     val shuffle by player.isShuffle.collectAsState()
     val repeat by player.repeatMode.collectAsState()
+    val spectrum by player.spectrum.collectAsState()
     var showPicker by remember { mutableStateOf(!hasNativeFilePicker) }
     var showEffects by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
@@ -214,7 +220,17 @@ fun PlayerScreen() {
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(top = 6.dp)
                     )
-                    Spacer(Modifier.height(28.dp))
+                    Spacer(Modifier.height(14.dp))
+                    // Current-effect pill — tap to open the effects drawer.
+                    EffectChip(
+                        effectName = currentEffect.displayName,
+                        isActive = currentEffect != com.sodamusic.player.audio.effects.AudioEffect.NONE,
+                        onClick = { showEffects = true }
+                    )
+                    Spacer(Modifier.height(18.dp))
+                    // Live spectrum driven by the player.
+                    SpectrumVisualizer(levels = spectrum)
+                    Spacer(Modifier.height(18.dp))
                 } ?: run {
                     Text(
                         "未选择音频",
@@ -307,6 +323,43 @@ fun PlayerScreen() {
                 showPicker = false
             },
             onDismiss = { showPicker = false }
+        )
+    }
+}
+
+/**
+ * Small pill that shows the currently selected audio effect. Tapping it opens the
+ * effects drawer. Highlights in primary color when a non-"原声" effect is active.
+ */
+@Composable
+private fun EffectChip(effectName: String, isActive: Boolean, onClick: () -> Unit) {
+    val bg = if (isActive) MaterialTheme.colorScheme.primary.copy(alpha = 0.18f)
+    else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f)
+    val border = if (isActive) MaterialTheme.colorScheme.primary
+    else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.1f)
+    val textColor = if (isActive) MaterialTheme.colorScheme.primary
+    else MaterialTheme.colorScheme.onSurfaceVariant
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .clip(RoundedCornerShape(50))
+            .background(bg)
+            .border(1.dp, border, RoundedCornerShape(50))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 6.dp)
+    ) {
+        Icon(
+            Icons.Default.Equalizer,
+            contentDescription = null,
+            tint = textColor,
+            modifier = Modifier.size(15.dp)
+        )
+        Spacer(Modifier.size(6.dp))
+        Text(
+            if (isActive) "音效 · $effectName" else "音效 · 原声",
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Medium,
+            color = textColor
         )
     }
 }

@@ -3,6 +3,7 @@ package com.sodamusic.player
 import android.content.Context
 import android.media.AudioAttributes
 import android.media.MediaPlayer
+import android.media.audiofx.Visualizer
 import android.net.Uri
 import com.sodamusic.player.audio.NativeAudioPlayer
 import com.sodamusic.player.audio.effects.AudioEffect
@@ -36,6 +37,7 @@ class AndroidAudioPlayer : NativeAudioPlayer {
 
     private var mediaPlayer: MediaPlayer? = null
     private var audioFx: SodaAudioFx? = null
+    private var visualizer: Visualizer? = null
     private var pendingEffect: AudioEffect = AudioEffect.NONE
     private var posJob: Job? = null
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
@@ -45,6 +47,9 @@ class AndroidAudioPlayer : NativeAudioPlayer {
 
     private val _currentPosition = MutableStateFlow(0L)
     override val currentPosition: StateFlow<Long> = _currentPosition.asStateFlow()
+
+    private val _spectrum = MutableStateFlow(FloatArray(SPECTRUM_BANDS))
+    override val spectrum: StateFlow<FloatArray> = _spectrum.asStateFlow()
 
     @Volatile
     private var totalDurationMs: Long = 0
@@ -76,6 +81,7 @@ class AndroidAudioPlayer : NativeAudioPlayer {
                 player.start()
                 // Attach the native AudioFx chain to this session and apply the current preset.
                 audioFx = SodaAudioFx(player.audioSessionId).also { it.configure(pendingEffect) }
+                attachVisualizer(player.audioSessionId)
                 _playState.value = PlayState.PLAYING
                 startPositionTracking()
             }
@@ -115,6 +121,72 @@ class AndroidAudioPlayer : NativeAudioPlayer {
         posJob = null
     }
 
+    private fun attachVisualizer(sessionId: Int) {
+        detachVisualizer()
+        try {
+            val viz = Visualizer(sessionId)
+            val captureSize = Visualizer.getCaptureSizeRange().let {
+                // Pick a moderate capture size so per-band grouping is smooth.
+                it.getOrElse(1) { 256 }
+            }
+            viz.captureSize = captureSize.coerceAtLeast(64)
+            viz.setDataCaptureListener(
+                object : Visualizer.OnDataCaptureListener {
+                    override fun onWaveFormDataCapture(v: Visualizer?, waveform: ByteArray?, samplingRate: Int) {}
+                    override fun onFftDataCapture(v: Visualizer?, fft: ByteArray?, samplingRate: Int) {
+                        val data = fft ?: return
+                        _spectrum.value = fftToBands(data)
+                    }
+                },
+                Visualizer.getMaxCaptureRate() / 2,
+                false,
+                true
+            )
+            viz.enabled = true
+            visualizer = viz
+        } catch (_: Exception) {
+            visualizer = null
+        }
+    }
+
+    private fun detachVisualizer() {
+        try { visualizer?.enabled = false; visualizer?.release() } catch (_: Exception) {}
+        visualizer = null
+        _spectrum.value = FloatArray(SPECTRUM_BANDS)
+    }
+
+    /** Convert JLayer/Android FFT bytes (interleaved re/im, scaled -128..127) to log-spaced bands. */
+    private fun fftToBands(fft: ByteArray): FloatArray {
+        val n = fft.size / 2
+        if (n <= 1) return FloatArray(SPECTRUM_BANDS)
+        val mags = FloatArray(n)
+        var maxVal = 1e-9f
+        for (k in 1 until n) {
+            val re = fft[k * 2].toFloat()
+            val im = fft[k * 2 + 1].toFloat()
+            val mag = Math.sqrt((re * re + im * im).toDouble()).toFloat()
+            mags[k] = mag
+            if (mag > maxVal) maxVal = mag
+        }
+        val out = FloatArray(SPECTRUM_BANDS)
+        val logN = kotlin.math.ln(n.toFloat())
+        var prevBin = 0
+        for (b in 0 until SPECTRUM_BANDS) {
+            val hi = (logN * (b + 1) / SPECTRUM_BANDS).coerceIn(0f, logN)
+            val binHi = kotlin.math.exp(hi.toDouble()).toInt().coerceIn(prevBin + 1, n)
+            var sum = 0f; var count = 0
+            for (k in (prevBin + 1) until binHi) {
+                if (k in 1 until n) { sum += mags[k]; count++ }
+            }
+            val avg = if (count > 0) sum / count else 0f
+            out[b] = ((avg / maxVal).toDouble().pow(0.6)).toFloat().coerceIn(0f, 1f)
+            prevBin = binHi
+        }
+        return out
+    }
+
+    private fun Double.pow(e: Double) = Math.pow(this, e)
+
     override fun pause() {
         mediaPlayer?.let {
             if (it.isPlaying) it.pause()
@@ -130,6 +202,7 @@ class AndroidAudioPlayer : NativeAudioPlayer {
     override fun stop() {
         _playState.value = PlayState.STOPPED
         stopPositionTracking()
+        detachVisualizer()
         try { audioFx?.release() } catch (_: Exception) {}
         audioFx = null
         try {
@@ -166,5 +239,6 @@ class AndroidAudioPlayer : NativeAudioPlayer {
 
     companion object {
         lateinit var appContext: Context
+        private const val SPECTRUM_BANDS = 32
     }
 }

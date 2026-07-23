@@ -18,6 +18,8 @@ interface NativeAudioPlayer {
     val durationMs: Long
     val playState: StateFlow<PlayState>
     val currentPosition: StateFlow<Long>
+    /** Normalized [0,1] per-band spectrum magnitudes for the visualizer (empty when unsupported). */
+    val spectrum: StateFlow<FloatArray>
     fun play(track: Track, effectProcessor: EffectProcessor)
     fun pause()
     fun resume()
@@ -38,6 +40,7 @@ class MusicPlayerController {
     val currentTrack: StateFlow<Track?> = _currentTrack.asStateFlow()
     val playState: StateFlow<PlayState> = player.playState
     val position: StateFlow<Long> = player.currentPosition
+    val spectrum: StateFlow<FloatArray> = player.spectrum
 
     private val _queue = MutableStateFlow<List<Track>>(emptyList())
     val queue: StateFlow<List<Track>> = _queue.asStateFlow()

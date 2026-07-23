@@ -37,6 +37,8 @@ class IOSAudioPlayer : NativeAudioPlayer {
     private val _currentPosition = MutableStateFlow(0L)
     override val currentPosition: StateFlow<Long> = _currentPosition.asStateFlow()
 
+    override val spectrum: StateFlow<FloatArray> = MutableStateFlow(FloatArray(0))
+
     private var totalDuration: Long = 0
 
     override val positionMs: Long get() = _currentPosition.value

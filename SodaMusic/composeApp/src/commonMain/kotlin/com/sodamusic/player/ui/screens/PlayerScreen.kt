@@ -55,6 +55,7 @@ import com.sodamusic.player.ui.components.TrackPicker
 import com.sodamusic.player.utils.getStartupTrackPath
 import com.sodamusic.player.utils.hasNativeFilePicker
 import com.sodamusic.player.utils.openAudioFilePicker
+import com.sodamusic.player.utils.resolveDisplayName
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -89,15 +90,9 @@ fun PlayerScreen() {
 
     fun pickAndPlayLocal(picked: String) {
         val isContentUri = picked.startsWith("content://")
-        val displayName = if (isContentUri) {
-            // content://com.android.externalstorage/.../foo.mp3 -> take last path segment.
-            picked.substringAfterLast('%').substringAfterLast('/').substringBeforeLast('.')
-                .ifBlank { picked.substringAfterLast('/').substringBeforeLast('.').ifBlank { "音频文件" } }
-        } else {
-            picked.substringAfterLast('/').substringAfterLast('\\')
-                .substringBeforeLast('.').ifBlank { picked }
-        }
         val source = if (isContentUri) TrackSource.ContentUri(picked) else TrackSource.Local(picked)
+        // Prefer the real display name from the SAF provider; fall back to path parsing.
+        val displayName = resolveDisplayName(picked) ?: "音频文件"
         val track = Track(
             id = "local_$picked",
             title = displayName,

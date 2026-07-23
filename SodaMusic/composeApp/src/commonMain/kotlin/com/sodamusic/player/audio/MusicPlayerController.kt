@@ -25,6 +25,8 @@ interface NativeAudioPlayer {
     fun seekTo(positionMs: Long)
     fun setVolume(volume: Float)
     fun release()
+    /** Apply an audio effect immediately (live switching). No-op on platforms that read the effect per-frame. */
+    fun applyEffect(effect: AudioEffect) {}
 }
 
 expect fun createNativeAudioPlayer(): NativeAudioPlayer
@@ -91,6 +93,7 @@ class MusicPlayerController {
     fun setEffect(effect: AudioEffect) {
         _currentEffect.value = effect
         effectProcessor.configure(effect)
+        player.applyEffect(effect)
     }
 
     fun seekTo(ms: Long) = player.seekTo(ms)

@@ -5,6 +5,7 @@ import android.media.AudioAttributes
 import android.media.MediaPlayer
 import android.net.Uri
 import com.sodamusic.player.audio.NativeAudioPlayer
+import com.sodamusic.player.audio.effects.AudioEffect
 import com.sodamusic.player.audio.effects.EffectProcessor
 import com.sodamusic.player.model.PlayState
 import com.sodamusic.player.model.Track
@@ -34,6 +35,8 @@ class AndroidAudioPlayer : NativeAudioPlayer {
     override val sampleRate: Int = 44100
 
     private var mediaPlayer: MediaPlayer? = null
+    private var audioFx: SodaAudioFx? = null
+    private var pendingEffect: AudioEffect = AudioEffect.NONE
     private var posJob: Job? = null
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
 
@@ -52,6 +55,7 @@ class AndroidAudioPlayer : NativeAudioPlayer {
         stop()
         _playState.value = PlayState.BUFFERING
         _currentPosition.value = 0
+        pendingEffect = effectProcessor.currentEffect
 
         val ctx = appContext
         val mp = MediaPlayer()
@@ -70,6 +74,8 @@ class AndroidAudioPlayer : NativeAudioPlayer {
             mp.setOnPreparedListener { player ->
                 totalDurationMs = runCatching { player.duration.toLong() }.getOrDefault(0L)
                 player.start()
+                // Attach the native AudioFx chain to this session and apply the current preset.
+                audioFx = SodaAudioFx(player.audioSessionId).also { it.configure(pendingEffect) }
                 _playState.value = PlayState.PLAYING
                 startPositionTracking()
             }
@@ -124,6 +130,8 @@ class AndroidAudioPlayer : NativeAudioPlayer {
     override fun stop() {
         _playState.value = PlayState.STOPPED
         stopPositionTracking()
+        try { audioFx?.release() } catch (_: Exception) {}
+        audioFx = null
         try {
             mediaPlayer?.let {
                 if (it.isPlaying) it.stop()
@@ -140,6 +148,11 @@ class AndroidAudioPlayer : NativeAudioPlayer {
             mediaPlayer?.seekTo(positionMs.toInt())
             _currentPosition.value = positionMs
         } catch (_: Exception) {}
+    }
+
+    override fun applyEffect(effect: AudioEffect) {
+        pendingEffect = effect
+        audioFx?.configure(effect)
     }
 
     override fun setVolume(volume: Float) {
